@@ -11,13 +11,18 @@
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <net/if.h>
+#include <netinet/ip.h>
+#include <arpa/inet.h>
 #include "bpf_load.h"
 #include "libbpf.h"
+#include <readline/readline.h>
+#include <stdbool.h>
 
 static int set_link_xdp_fd(int ifindex, int fd)
 {
@@ -117,6 +122,56 @@ static void int_exit(int sig)
 	exit(0);
 }
 
+static void get_ip(struct in_addr *ip, bool *remove)
+{
+	static const char *prompt = "Type an ip addres to block.  Start with - to unblock: ";
+	char *line = readline(prompt);
+	char *ip_str;
+	if (line == NULL) {
+		printf("NULL, return\n");
+		return; 
+	}
+	if (strlen(line) < 4) {
+		printf("too short\n");
+		free(line);
+		return;
+	}
+	ip_str = line;
+	*remove = false;
+	if (line[0] == '-') {
+		*remove = true;
+		ip_str++;
+	}
+	/* return value ignored for now */
+	if (inet_pton(AF_INET, ip_str, ip) != 1)
+		ip->s_addr = 0;
+	free(line);
+	return;
+}
+
+static void drop_ips(void)
+{
+	int rc;
+	printf("Reading from stdin\n");
+	while (1) {
+		struct in_addr ip;
+		bool remove = true;
+		get_ip(&ip, &remove);
+		if (!ip.s_addr)
+			continue;
+		if (remove) {
+			rc = bpf_delete_elem(map_fd[0], &ip.s_addr);
+			if (rc)
+				printf("Delete elem failed: %d\n", rc);
+		} else {
+			uint32_t value = 1;
+			rc = bpf_update_elem(map_fd[0], &ip.s_addr, &value, BPF_ANY);
+			if (rc)
+				printf("update elem failed: %d\n", rc);
+		}
+	}
+}
+
 int main(int ac, char **argv)
 {
 	/* not const because called functions don't use const */
@@ -153,6 +208,7 @@ int main(int ac, char **argv)
 		return 1;
 	}
 
+	drop_ips();
 	return 0;
 }
 
